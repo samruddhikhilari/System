@@ -451,7 +451,8 @@ def get_alerts(db: Session = Depends(get_db)):
     visible = [
         row
         for row in rows
-        if row.snoozed_until is None or row.snoozed_until <= current_time
+        if row.status == "active"
+        and (row.snoozed_until is None or row.snoozed_until <= current_time)
     ]
 
     return [
