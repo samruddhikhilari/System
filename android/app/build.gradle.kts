@@ -9,7 +9,7 @@ android {
     namespace = "com.example.demo"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = "23.2.8568313"
-    ndkPath = "C:/Program Files (x86)/Android/AndroidNDK/android-ndk-r23c"
+    // ndkPath = "C:/Program Files (x86)/Android/AndroidNDK/android-ndk-r23c"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
