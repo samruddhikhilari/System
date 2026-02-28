@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../../data/models/dashboard_model.dart';
+import '../../../data/repositories/alert_repository.dart';
 import '../../viewmodels/dashboard/dashboard_viewmodel.dart';
 import '../../widgets/charts/nri_gauge.dart';
 import '../../widgets/common/loading_overlay.dart';
@@ -16,6 +18,8 @@ class DashboardScreen extends ConsumerStatefulWidget {
 }
 
 class _DashboardScreenState extends ConsumerState<DashboardScreen> {
+  final Set<String> _inFlightAlertIds = <String>{};
+
   @override
   void initState() {
     super.initState();
@@ -29,6 +33,55 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
   void dispose() {
     ref.read(dashboardViewModelProvider.notifier).stopAutoRefresh();
     super.dispose();
+  }
+
+  Future<void> _handleAcknowledge(AlertSummary alert) async {
+    if (_inFlightAlertIds.contains(alert.id)) return;
+
+    setState(() => _inFlightAlertIds.add(alert.id));
+    try {
+      await ref.read(alertRepositoryProvider).acknowledgeAlert(alert.id);
+      await ref.read(dashboardViewModelProvider.notifier).load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Alert acknowledged.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to acknowledge alert: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _inFlightAlertIds.remove(alert.id));
+      }
+    }
+  }
+
+  Future<void> _handleSnooze(AlertSummary alert) async {
+    if (_inFlightAlertIds.contains(alert.id)) return;
+
+    setState(() => _inFlightAlertIds.add(alert.id));
+    try {
+      await ref.read(alertRepositoryProvider).snoozeAlert(
+            alert.id,
+            const Duration(minutes: 30),
+          );
+      await ref.read(dashboardViewModelProvider.notifier).load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Alert snoozed for 30 minutes.')),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to snooze alert: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _inFlightAlertIds.remove(alert.id));
+      }
+    }
   }
 
   @override
@@ -127,12 +180,19 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
                 ...summary.activeAlerts.map(
                   (alert) => Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: AlertCard(
-                      title: alert.title,
-                      timestampLabel: alert.timestamp.toLocal().toString(),
-                      severity: alert.severity,
-                      onAcknowledge: () {},
-                      onSnooze: () {},
+                    child: Opacity(
+                      opacity: _inFlightAlertIds.contains(alert.id) ? 0.6 : 1,
+                      child: AlertCard(
+                        title: alert.title,
+                        timestampLabel: alert.timestamp.toLocal().toString(),
+                        severity: alert.severity,
+                        onAcknowledge: _inFlightAlertIds.contains(alert.id)
+                            ? null
+                            : () => _handleAcknowledge(alert),
+                        onSnooze: _inFlightAlertIds.contains(alert.id)
+                            ? null
+                            : () => _handleSnooze(alert),
+                      ),
                     ),
                   ),
                 ),
@@ -183,6 +243,14 @@ class _DashboardScreenState extends ConsumerState<DashboardScreen> {
             ListTile(
               title: const Text('Reports'),
               onTap: () => context.push('/reports'),
+            ),
+            ListTile(
+              title: const Text('Manager Console'),
+              onTap: () => context.push('/manager'),
+            ),
+            ListTile(
+              title: const Text('Admin Panel'),
+              onTap: () => context.push('/admin'),
             ),
             const Divider(),
             ListTile(

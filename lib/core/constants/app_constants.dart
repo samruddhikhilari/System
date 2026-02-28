@@ -11,6 +11,7 @@ class AppConstants {
   static const String keyAccessToken = 'access_token';
   static const String keyRefreshToken = 'refresh_token';
   static const String keyUserId = 'user_id';
+  static const String keyUserRole = 'user_role';
   static const String keyOrgId = 'org_id';
   static const String keyOnboardingDone = 'onboarding_done';
   static const String keyBiometricEnabled = 'biometric_enabled';

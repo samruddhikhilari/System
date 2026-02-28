@@ -6,6 +6,7 @@ class AppConfig {
   final bool enableLogging;
   final bool enableAnalytics;
   final bool enableCrashlytics;
+  final bool enableRealtime;
 
   const AppConfig({
     required this.baseUrl,
@@ -14,6 +15,7 @@ class AppConfig {
     required this.enableLogging,
     this.enableAnalytics = true,
     this.enableCrashlytics = true,
+    this.enableRealtime = true,
   });
 
   /// Development configuration
@@ -24,6 +26,7 @@ class AppConfig {
     enableLogging: true,
     enableAnalytics: true,
     enableCrashlytics: false,
+    enableRealtime: false,
   );
 
   /// Staging configuration
@@ -34,6 +37,7 @@ class AppConfig {
     enableLogging: true,
     enableAnalytics: true,
     enableCrashlytics: true,
+    enableRealtime: true,
   );
 
   /// Production configuration
@@ -44,11 +48,13 @@ class AppConfig {
     enableLogging: false,
     enableAnalytics: true,
     enableCrashlytics: true,
+    enableRealtime: true,
   );
 
   /// Get current environment config
   static AppConfig get current {
     const overrideBaseUrl = String.fromEnvironment('API_BASE_URL', defaultValue: '');
+    const enableRealtime = bool.fromEnvironment('ENABLE_REALTIME', defaultValue: false);
     if (overrideBaseUrl.isNotEmpty) {
       return AppConfig(
         baseUrl: overrideBaseUrl,
@@ -57,17 +63,42 @@ class AppConfig {
         enableLogging: true,
         enableAnalytics: true,
         enableCrashlytics: false,
+        enableRealtime: enableRealtime,
       );
     }
 
     const env = String.fromEnvironment('ENV', defaultValue: 'dev');
     switch (env) {
       case 'staging':
-        return staging;
+        return AppConfig(
+          baseUrl: staging.baseUrl,
+          apiVersion: staging.apiVersion,
+          environment: staging.environment,
+          enableLogging: staging.enableLogging,
+          enableAnalytics: staging.enableAnalytics,
+          enableCrashlytics: staging.enableCrashlytics,
+          enableRealtime: enableRealtime,
+        );
       case 'production':
-        return production;
+        return AppConfig(
+          baseUrl: production.baseUrl,
+          apiVersion: production.apiVersion,
+          environment: production.environment,
+          enableLogging: production.enableLogging,
+          enableAnalytics: production.enableAnalytics,
+          enableCrashlytics: production.enableCrashlytics,
+          enableRealtime: enableRealtime,
+        );
       default:
-        return dev;
+        return AppConfig(
+          baseUrl: dev.baseUrl,
+          apiVersion: dev.apiVersion,
+          environment: dev.environment,
+          enableLogging: dev.enableLogging,
+          enableAnalytics: dev.enableAnalytics,
+          enableCrashlytics: dev.enableCrashlytics,
+          enableRealtime: enableRealtime,
+        );
     }
   }
 

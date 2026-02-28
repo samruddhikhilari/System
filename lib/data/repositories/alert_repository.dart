@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/app_config.dart';
 import '../../core/constants/api_endpoints.dart';
 import '../../core/errors/exceptions.dart';
 import '../models/dashboard_model.dart';
@@ -100,6 +101,11 @@ class AlertRepositoryImpl implements AlertRepository {
 
   @override
   Future<void> initializeRealtime() async {
+    if (!AppConfig.current.enableRealtime) {
+      webSocketService.disconnect();
+      return;
+    }
+
     final token = await authRepository.getAccessToken();
     if (token == null || token.isEmpty) {
       return;

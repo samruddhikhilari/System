@@ -1,32 +1,46 @@
-import 'dart:math';
-
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-class SimulationScreen extends StatefulWidget {
+import '../../../core/constants/api_endpoints.dart';
+import '../../../data/sources/remote/dio_provider.dart';
+
+class SimulationScreen extends ConsumerStatefulWidget {
   const SimulationScreen({super.key});
 
   @override
-  State<SimulationScreen> createState() => _SimulationScreenState();
+  ConsumerState<SimulationScreen> createState() => _SimulationScreenState();
 }
 
-class _SimulationScreenState extends State<SimulationScreen> {
+class _SimulationScreenState extends ConsumerState<SimulationScreen> {
   double _iterations = 1000;
   bool _running = false;
-  int? _suppliersAffected;
-  double? _revenueImpact;
-  int? _durationDays;
+  Map<String, dynamic>? _result;
 
   Future<void> _runSimulation() async {
     setState(() => _running = true);
-    await Future<void>.delayed(const Duration(milliseconds: 900));
-
-    final random = Random();
-    setState(() {
-      _suppliersAffected = 18 + random.nextInt(40);
-      _revenueImpact = 4.5 + random.nextDouble() * 21;
-      _durationDays = 5 + random.nextInt(30);
-      _running = false;
-    });
+    try {
+      final dio = ref.read(dioProvider);
+      final response = await dio.post(
+        ApiEndpoints.simulationRun,
+        data: {
+          'iterations': _iterations.toInt(),
+          'disruption_type': 'supplier_failure',
+          'region': 'west',
+        },
+      );
+      setState(() {
+        _result = response.data as Map<String, dynamic>;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Simulation failed: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _running = false);
+      }
+    }
   }
 
   @override
@@ -69,24 +83,36 @@ class _SimulationScreenState extends State<SimulationScreen> {
           Card(
             child: ListTile(
               title: const Text('Suppliers Affected'),
-              trailing: Text('${_suppliersAffected ?? '-'}'),
+              trailing: Text('${_result?['suppliers_affected'] ?? '-'}'),
             ),
           ),
           Card(
             child: ListTile(
               title: const Text('Revenue Impact (Cr)'),
-              trailing: Text(_revenueImpact?.toStringAsFixed(1) ?? '-'),
+              trailing: Text('${_result?['revenue_impact_cr'] ?? '-'}'),
             ),
           ),
           Card(
             child: ListTile(
               title: const Text('Duration (days)'),
-              trailing: Text('${_durationDays ?? '-'}'),
+              trailing: Text('${_result?['duration_days'] ?? '-'}'),
+            ),
+          ),
+          Card(
+            child: ListTile(
+              title: const Text('Confidence'),
+              trailing: Text('${_result?['confidence'] ?? '-'}'),
             ),
           ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-            onPressed: () {},
+            onPressed: _result == null
+                ? null
+                : () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Simulation result captured for reporting.')),
+                    );
+                  },
             icon: const Icon(Icons.download),
             label: const Text('Export Simulation Results'),
           ),

@@ -19,6 +19,7 @@ import '../presentation/views/reports/reports_screen.dart';
 import '../presentation/views/settings/settings_screen.dart';
 import '../presentation/views/profile/profile_screen.dart';
 import '../presentation/views/admin/admin_panel_screen.dart';
+import '../presentation/views/manager/manager_console_screen.dart';
 
 /// Router configuration provider
 final routerProvider = Provider<GoRouter>((ref) {
@@ -153,6 +154,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => const AdminPanelScreen(),
       ),
 
+      // Manager Console (Manager/Admin Role Required)
+      GoRoute(
+        path: '/manager',
+        name: 'manager',
+        builder: (context, state) => const ManagerConsoleScreen(),
+      ),
+
       // Profile (Auth Required)
       GoRoute(
         path: '/profile',
@@ -165,6 +173,7 @@ final routerProvider = Provider<GoRouter>((ref) {
     redirect: (context, state) async {
       const storage = FlutterSecureStorage();
       final token = await storage.read(key: AppConstants.keyAccessToken);
+      final role = await storage.read(key: AppConstants.keyUserRole);
       final isAuthed = token != null && token.isNotEmpty;
 
       const publicRoutes = {'/splash', '/login', '/register'};
@@ -178,6 +187,14 @@ final routerProvider = Provider<GoRouter>((ref) {
           (state.matchedLocation == '/login' ||
               state.matchedLocation == '/register' ||
               state.matchedLocation == '/splash')) {
+        return '/dashboard';
+      }
+
+      if (state.matchedLocation == '/admin' && role != 'admin') {
+        return '/dashboard';
+      }
+
+      if (state.matchedLocation == '/manager' && role != 'manager' && role != 'admin') {
         return '/dashboard';
       }
 

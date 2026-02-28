@@ -51,6 +51,7 @@ class ApiEndpoints {
   static const String simulationHistory = '/simulation/history';
 
   // Recommendations
+    static const String recommendationsOptimize = '/recommendations/optimize';
   static String recommendationAlternatives(String id) =>
       '/recommendations/alternatives/$id';
   static const String recommendationOptimize = '/recommendations/optimize';
@@ -58,6 +59,23 @@ class ApiEndpoints {
       '/recommendations/safety-stock/$id';
   static String recommendationDiversification(String id) =>
       '/recommendations/diversification/$id';
+
+    // Mitigation
+    static String mitigationApply(String id) => '/mitigations/$id/apply';
+
+    // Manager
+    static const String managerQueue = '/manager/queue';
+    static const String managerSla = '/manager/sla';
+    static const String managerApprovals = '/manager/approvals';
+    static String managerAssignAlert(String id) => '/manager/alerts/$id/assign';
+    static String managerApprovalDecision(String id) => '/manager/approvals/$id/decision';
+
+    // Admin
+    static const String adminUsers = '/admin/users';
+    static String adminUpdateUserRole(String id) => '/admin/users/$id/role';
+    static const String adminAuditLogs = '/admin/audit-logs';
+    static const String adminIntegrationsHealth = '/admin/integrations/health';
+    static const String adminCompliancePolicy = '/admin/policies/compliance';
 
   // Routes
   static const String routeOptimize = '/routes/optimize';

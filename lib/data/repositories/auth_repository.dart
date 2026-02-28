@@ -50,6 +50,7 @@ class AuthRepositoryImpl implements AuthRepository {
       await saveTokens(result.accessToken, result.refreshToken);
       await storage.write(key: AppConstants.keyOrgId, value: orgId);
       await storage.write(key: AppConstants.keyUserId, value: result.userProfile.id);
+      await storage.write(key: AppConstants.keyUserRole, value: result.userProfile.role);
 
       return result;
     } on DioException catch (error) {
@@ -121,6 +122,7 @@ class AuthRepositoryImpl implements AuthRepository {
     await storage.delete(key: AppConstants.keyAccessToken);
     await storage.delete(key: AppConstants.keyRefreshToken);
     await storage.delete(key: AppConstants.keyUserId);
+    await storage.delete(key: AppConstants.keyUserRole);
     await storage.delete(key: AppConstants.keyOrgId);
   }
 
@@ -140,6 +142,7 @@ class AuthRepositoryImpl implements AuthRepository {
       final payload = _normalizeAuthPayload(response.data as Map<String, dynamic>);
       final result = AuthResponse.fromJson(payload);
       await saveTokens(result.accessToken, result.refreshToken);
+      await storage.write(key: AppConstants.keyUserRole, value: result.userProfile.role);
       return result;
     } on DioException catch (error) {
       final appException = error.error;
