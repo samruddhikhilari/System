@@ -631,6 +631,7 @@ app = FastAPI(title="N-SCRRA Local Backend", version="1.0.0", lifespan=lifespan)
 active_alert_connections: dict[WebSocket, str] = {}
 notified_sla_breaches: set[str] = set()
 rate_limit_store: dict[str, list[datetime]] = {}
+response_cache: dict[str, tuple[datetime, object]] = {}
 manager_only_events = {
     "sla_breach",
     "alert_assigned",
@@ -697,6 +698,32 @@ def _active_rate_limit_counts() -> list[dict]:
 
     snapshot.sort(key=lambda item: item["active_requests"], reverse=True)
     return snapshot
+
+
+def _cache_get(key: str) -> Optional[object]:
+    entry = response_cache.get(key)
+    if entry is None:
+        return None
+
+    expires_at, payload = entry
+    if expires_at <= now_utc():
+        response_cache.pop(key, None)
+        return None
+    return payload
+
+
+def _cache_set(key: str, payload: object, ttl_seconds: int) -> object:
+    response_cache[key] = (now_utc() + timedelta(seconds=ttl_seconds), payload)
+    return payload
+
+
+def _invalidate_cache(prefixes: list[str]) -> None:
+    if not response_cache:
+        return
+
+    for key in list(response_cache.keys()):
+        if any(key.startswith(prefix) for prefix in prefixes):
+            response_cache.pop(key, None)
 
 
 async def _broadcast_alert_event(event: str, payload: dict) -> None:
@@ -941,7 +968,24 @@ def refresh_token(payload: RefreshRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
 
     token_row = db.scalar(select(RefreshToken).where(RefreshToken.token == payload.refresh_token))
-    if token_row is None or token_row.revoked or token_row.expires_at < now_utc():
+    if token_row is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token invalid/expired")
+
+    if token_row.revoked:
+        active_user_tokens = db.scalars(
+            select(RefreshToken).where(
+                RefreshToken.user_id == token_row.user_id,
+                RefreshToken.revoked == False,
+            )
+        ).all()
+        for item in active_user_tokens:
+            item.revoked = True
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token reuse detected")
+
+    if token_row.expires_at < now_utc():
+        token_row.revoked = True
+        db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token invalid/expired")
 
     user = db.get(User, token_row.user_id)
@@ -949,9 +993,22 @@ def refresh_token(payload: RefreshRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
     access_token, expires_in = create_access_token(user.id, user.email)
+    new_refresh_token, refresh_expires_at = create_refresh_token(user.id)
+    token_row.revoked = True
+    db.add(
+        RefreshToken(
+            id=str(uuid.uuid4()),
+            user_id=user.id,
+            token=new_refresh_token,
+            expires_at=refresh_expires_at,
+            revoked=False,
+        )
+    )
+    db.commit()
+
     return {
         "access_token": access_token,
-        "refresh_token": payload.refresh_token,
+        "refresh_token": new_refresh_token,
         "expires_in": expires_in,
     }
 
@@ -1069,6 +1126,7 @@ async def acknowledge_alert(alert_id: str, db: Session = Depends(get_db)):
 
     alert.status = "acknowledged"
     db.commit()
+    _invalidate_cache(["dashboard:summary"])
     await _broadcast_alert_event("alert_acknowledged", _alert_payload(alert))
     return {"id": alert.id, "status": alert.status}
 
@@ -1081,6 +1139,7 @@ async def snooze_alert(alert_id: str, payload: AlertSnoozeRequest, db: Session =
 
     alert.snoozed_until = now_utc() + timedelta(minutes=payload.duration_minutes)
     db.commit()
+    _invalidate_cache(["dashboard:summary"])
     await _broadcast_alert_event("alert_snoozed", _alert_payload(alert))
     return {"id": alert.id, "snoozed_until": as_utc(alert.snoozed_until).isoformat()}
 
@@ -1122,6 +1181,7 @@ async def seed_alerts(payload: AlertSeedRequest, db: Session = Depends(get_db)):
         created_ids.append(alert.id)
 
     db.commit()
+    _invalidate_cache(["dashboard:summary"])
     if created_ids:
         latest = db.get(Alert, created_ids[0])
         if latest is not None:
@@ -1142,6 +1202,7 @@ def update_alert_preferences(payload: AlertPreferenceRequest, db: Session = Depe
     pref.critical_alerts = payload.critical_alerts
     pref.high_priority = payload.high_priority
     db.commit()
+    _invalidate_cache(["dashboard:summary"])
     return {
         "org_id": pref.org_id,
         "critical_alerts": pref.critical_alerts,
@@ -1151,6 +1212,11 @@ def update_alert_preferences(payload: AlertPreferenceRequest, db: Session = Depe
 
 @app.get("/api/v1/dashboard/summary")
 def dashboard_summary(db: Session = Depends(get_db)):
+    cache_key = "dashboard:summary"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     alerts = db.scalars(select(Alert).order_by(Alert.created_at.desc())).all()
     active_alerts = [alert for alert in alerts if alert.status == "active"]
 
@@ -1181,7 +1247,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
         },
     ]
 
-    return {
+    payload = {
         "nri_score": nri_score,
         "nri_delta": nri_delta,
         "sectors": sectors,
@@ -1205,6 +1271,7 @@ def dashboard_summary(db: Session = Depends(get_db)):
         },
         "last_updated": now_utc().isoformat(),
     }
+    return _cache_set(cache_key, payload, ttl_seconds=15)
 
 
 @app.get("/api/v1/network/graph")
@@ -1655,6 +1722,7 @@ def admin_update_role(
         details=f"from={previous_role},to={payload.role}",
     )
     db.commit()
+    _invalidate_cache(["admin:audit-logs"])
     return {
         "id": user.id,
         "role": user.role,
@@ -1668,13 +1736,18 @@ def admin_audit_logs(
     page_size: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
+    cache_key = f"admin:audit-logs:page:{page}:size:{page_size}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     require_role(authorization, db, {"admin"})
     all_logs = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc())).all()
     total = len(all_logs)
     start = (page - 1) * page_size
     end = start + page_size
     logs = all_logs[start:end]
-    return {
+    payload = {
         "logs": [
             {
                 "id": log.id,
@@ -1694,6 +1767,7 @@ def admin_audit_logs(
             "has_next": end < total,
         },
     }
+    return _cache_set(cache_key, payload, ttl_seconds=20)
 
 
 @app.get("/api/v1/admin/integrations/health")
@@ -1795,6 +1869,7 @@ def admin_update_compliance_policy(
         details=f"retention_days={payload.retention_days},mask_sensitive_data={payload.mask_sensitive_data}",
     )
     db.commit()
+    _invalidate_cache(["admin:audit-logs"])
     return {
         "org_id": policy.org_id,
         "retention_days": policy.retention_days,
@@ -1850,6 +1925,7 @@ def generate_report(
         details=f"period={payload.period},format={payload.output_format}",
     )
     db.commit()
+    _invalidate_cache(["reports:list", "admin:audit-logs"])
 
     return {
         "report_id": report_job.id,
@@ -1868,13 +1944,18 @@ def list_reports(
     page_size: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
+    cache_key = f"reports:list:page:{page}:size:{page_size}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     require_user(authorization, db)
     all_rows = db.scalars(select(ReportJob).order_by(ReportJob.created_at.desc())).all()
     total = len(all_rows)
     start = (page - 1) * page_size
     end = start + page_size
     rows = all_rows[start:end]
-    return {
+    payload = {
         "reports": [
             {
                 "id": row.id,
@@ -1895,6 +1976,7 @@ def list_reports(
             "has_next": end < total,
         },
     }
+    return _cache_set(cache_key, payload, ttl_seconds=20)
 
 
 @app.get("/api/v1/reports/{report_id}/status")
