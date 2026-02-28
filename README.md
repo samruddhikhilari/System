@@ -93,3 +93,32 @@ flutter pub get
 ## Backend Details
 
 Detailed backend notes are available in [backend/README.md](backend/README.md).
+
+
+
+### System flow 
+Role-wise Product Flow (One-page Deck Version)
+
+1) Risk Analyst (Daily Operator)
+
+Login and open Dashboard to review NRI, active alerts, and top-risk sectors/routes.
+Open Alert Center, triage each alert: Ack if taking ownership, Snooze if waiting for more data.
+Drill into Risk Intelligence + Network Map to find impacted suppliers/lanes and probable cause.
+Run Simulation/Recommendations to choose mitigation (alternate supplier, reroute, safety stock).
+Trigger action and monitor whether risk drops in next cycle.
+2) Risk Manager (Decision Maker)
+
+Review team queue: acknowledged vs pending alerts and SLA breaches.
+Validate high-impact mitigations (cost vs service risk) from simulations.
+Approve escalation for critical disruptions and assign owners.
+Track weekly trend in risk reduction, response time, and recurring hotspots.
+3) Admin (Governance & Control)
+
+Configure organizations, user roles, and access permissions.
+Set alert preferences/thresholds by severity and business criticality.
+Ensure auditability: who acknowledged what, when, and outcome.
+Maintain integrations/data health and policy compliance settings.
+
+
+
+Start backend and login with seeded roles: admin@demo.com / Admin@123, manager@demo.com / Manager@123.
