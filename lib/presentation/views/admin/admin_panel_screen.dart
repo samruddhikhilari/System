@@ -16,7 +16,11 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> {
   List<Map<String, dynamic>> _users = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _logs = <Map<String, dynamic>>[];
   List<Map<String, dynamic>> _sources = <Map<String, dynamic>>[];
+  List<Map<String, dynamic>> _rateLimitKeys = <Map<String, dynamic>>[];
   Map<String, dynamic> _policy = <String, dynamic>{};
+  int _auditPage = 1;
+  static const int _auditPageSize = 10;
+  bool _hasNextAuditPage = false;
 
   @override
   void initState() {
@@ -30,8 +34,15 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> {
       final dio = ref.read(dioProvider);
       final responses = await Future.wait([
         dio.get(ApiEndpoints.adminUsers),
-        dio.get(ApiEndpoints.adminAuditLogs),
+        dio.get(
+          ApiEndpoints.adminAuditLogs,
+          queryParameters: {
+            'page': _auditPage,
+            'page_size': _auditPageSize,
+          },
+        ),
         dio.get(ApiEndpoints.adminIntegrationsHealth),
+        dio.get(ApiEndpoints.adminRateLimits),
         dio.get(ApiEndpoints.adminCompliancePolicy),
       ]);
 
@@ -42,11 +53,18 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> {
         _logs = (responses[1].data['logs'] as List<dynamic>? ?? <dynamic>[])
             .whereType<Map<String, dynamic>>()
             .toList(growable: false);
+        final pagination =
+          responses[1].data['pagination'] as Map<String, dynamic>? ?? <String, dynamic>{};
+        _hasNextAuditPage = pagination['has_next'] == true;
         _sources =
             (responses[2].data['sources'] as List<dynamic>? ?? <dynamic>[])
                 .whereType<Map<String, dynamic>>()
                 .toList(growable: false);
-        _policy = responses[3].data as Map<String, dynamic>;
+        _rateLimitKeys =
+          (responses[3].data['active_keys'] as List<dynamic>? ?? <dynamic>[])
+            .whereType<Map<String, dynamic>>()
+            .toList(growable: false);
+        _policy = responses[4].data as Map<String, dynamic>;
       });
     } catch (error) {
       if (!mounted) return;
@@ -185,12 +203,55 @@ class _AdminPanelScreenState extends ConsumerState<AdminPanelScreen> {
                   ),
                   const SizedBox(height: 16),
                   Text(
+                    'Rate Limits',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  if (_rateLimitKeys.isEmpty)
+                    const Card(
+                      child: ListTile(title: Text('No active limiter counters.')),
+                    ),
+                  ..._rateLimitKeys.take(6).map(
+                    (item) => Card(
+                      child: ListTile(
+                        dense: true,
+                        title: Text((item['key'] ?? '').toString()),
+                        subtitle: Text(
+                          'Active requests: ${item['active_requests'] ?? 0}',
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
                     'Audit Log',
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
-                  ..._logs
-                      .take(10)
-                      .map(
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text('Page $_auditPage'),
+                      const SizedBox(width: 8),
+                      IconButton(
+                        onPressed: _auditPage > 1
+                            ? () {
+                                setState(() => _auditPage -= 1);
+                                _loadAdminData();
+                              }
+                            : null,
+                        icon: const Icon(Icons.chevron_left),
+                      ),
+                      IconButton(
+                        onPressed: _hasNextAuditPage
+                            ? () {
+                                setState(() => _auditPage += 1);
+                                _loadAdminData();
+                              }
+                            : null,
+                        icon: const Icon(Icons.chevron_right),
+                      ),
+                    ],
+                  ),
+                  ..._logs.map(
                         (log) => Card(
                           child: ListTile(
                             dense: true,

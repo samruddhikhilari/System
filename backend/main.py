@@ -5,11 +5,13 @@ import os
 import base64
 import hashlib
 import hmac
+import json
 import random
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -29,10 +31,32 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, rela
 
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
-JWT_SECRET = "dev-secret-change-me"
+JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_MINUTES = 15
 REFRESH_TOKEN_DAYS = 7
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+REGISTER_RATE_LIMIT_MAX = _env_int("REGISTER_RATE_LIMIT_MAX", 10)
+REGISTER_RATE_LIMIT_WINDOW_SECONDS = _env_int("REGISTER_RATE_LIMIT_WINDOW_SECONDS", 60)
+LOGIN_IP_RATE_LIMIT_MAX = _env_int("LOGIN_IP_RATE_LIMIT_MAX", 25)
+LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS = _env_int("LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS", 60)
+LOGIN_EMAIL_RATE_LIMIT_MAX = _env_int("LOGIN_EMAIL_RATE_LIMIT_MAX", 10)
+LOGIN_EMAIL_RATE_LIMIT_WINDOW_SECONDS = _env_int("LOGIN_EMAIL_RATE_LIMIT_WINDOW_SECONDS", 60)
+REPORT_GEN_USER_RATE_LIMIT_MAX = _env_int("REPORT_GEN_USER_RATE_LIMIT_MAX", 10)
+REPORT_GEN_USER_RATE_LIMIT_WINDOW_SECONDS = _env_int("REPORT_GEN_USER_RATE_LIMIT_WINDOW_SECONDS", 60)
+REPORT_GEN_IP_RATE_LIMIT_MAX = _env_int("REPORT_GEN_IP_RATE_LIMIT_MAX", 20)
+REPORT_GEN_IP_RATE_LIMIT_WINDOW_SECONDS = _env_int("REPORT_GEN_IP_RATE_LIMIT_WINDOW_SECONDS", 60)
 
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -59,8 +83,8 @@ class User(Base):
     email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String, nullable=False)
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
-    role: Mapped[str] = mapped_column(String, nullable=False, default="analyst")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False, default="analyst", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -68,8 +92,8 @@ class UserOrganization(Base):
     __tablename__ = "user_organizations"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
-    org_id: Mapped[str] = mapped_column(String, ForeignKey("organizations.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False, index=True)
+    org_id: Mapped[str] = mapped_column(String, ForeignKey("organizations.id"), nullable=False, index=True)
     role_in_org: Mapped[str] = mapped_column(String, nullable=False, default="member")
 
 
@@ -77,9 +101,9 @@ class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False, index=True)
     token: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
@@ -87,12 +111,12 @@ class Alert(Base):
     __tablename__ = "alerts"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    severity: Mapped[str] = mapped_column(String, nullable=False)
+    severity: Mapped[str] = mapped_column(String, nullable=False, index=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    supplier_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    supplier_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     snoozed_until: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
@@ -109,8 +133,8 @@ class AlertAssignment(Base):
     __tablename__ = "alert_assignments"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    alert_id: Mapped[str] = mapped_column(String, ForeignKey("alerts.id"), nullable=False, unique=True)
-    owner_email: Mapped[str] = mapped_column(String, nullable=False)
+    alert_id: Mapped[str] = mapped_column(String, ForeignKey("alerts.id"), nullable=False, unique=True, index=True)
+    owner_email: Mapped[str] = mapped_column(String, nullable=False, index=True)
     assigned_by: Mapped[str] = mapped_column(String, nullable=False)
     assigned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -120,14 +144,14 @@ class MitigationAction(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
-    category: Mapped[str] = mapped_column(String, nullable=False)
+    category: Mapped[str] = mapped_column(String, nullable=False, index=True)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     estimated_risk_reduction: Mapped[float] = mapped_column(nullable=False, default=0.0)
     cost_impact_percent: Mapped[float] = mapped_column(nullable=False, default=0.0)
     service_impact_percent: Mapped[float] = mapped_column(nullable=False, default=0.0)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="proposed")
-    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="proposed", index=True)
+    requires_approval: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     approved_by: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     approved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -138,7 +162,7 @@ class CompliancePolicy(Base):
     __tablename__ = "compliance_policies"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    org_id: Mapped[str] = mapped_column(String, nullable=False)
+    org_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=90)
     mask_sensitive_data: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -148,12 +172,27 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    actor_email: Mapped[str] = mapped_column(String, nullable=False)
-    action: Mapped[str] = mapped_column(String, nullable=False)
+    actor_email: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String, nullable=False, index=True)
     entity_type: Mapped[str] = mapped_column(String, nullable=False)
     entity_id: Mapped[str] = mapped_column(String, nullable=False)
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class ReportJob(Base):
+    __tablename__ = "report_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    report_type: Mapped[str] = mapped_column(String, nullable=False, default="kpi", index=True)
+    period: Mapped[str] = mapped_column(String, nullable=False, default="weekly", index=True)
+    output_format: Mapped[str] = mapped_column(String, nullable=False, default="csv", index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="ready", index=True)
+    generated_by: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    download_path: Mapped[str] = mapped_column(String, nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class RegisterRequest(BaseModel):
@@ -210,6 +249,11 @@ class UpdateUserRoleRequest(BaseModel):
 class CompliancePolicyRequest(BaseModel):
     retention_days: int = Field(default=90, ge=7, le=3650)
     mask_sensitive_data: bool = True
+
+
+class ReportGenerateRequest(BaseModel):
+    period: str = Field(default="weekly", pattern="^(weekly|monthly)$")
+    output_format: str = Field(default="csv", pattern="^(csv|pdf)$")
 
 
 def get_db():
@@ -288,11 +332,7 @@ def decode_token(token: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from exc
 
 
-def require_user(authorization: Optional[str], db: Session) -> User:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-
-    token = authorization.split(" ", 1)[1]
+def user_from_access_token(token: str, db: Session) -> User:
     payload = decode_token(token)
     if payload.get("type") != "access":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token type")
@@ -303,6 +343,14 @@ def require_user(authorization: Optional[str], db: Session) -> User:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
 
     return user
+
+
+def require_user(authorization: Optional[str], db: Session) -> User:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+
+    token = authorization.split(" ", 1)[1]
+    return user_from_access_token(token, db)
 
 
 def require_role(authorization: Optional[str], db: Session, allowed_roles: set[str]) -> User:
@@ -343,6 +391,112 @@ def _severity_sla_minutes(severity: str) -> int:
     if key == "medium":
         return 240
     return 480
+
+
+def _alert_payload(alert: Alert, owner_email: Optional[str] = None) -> dict:
+    return {
+        "id": alert.id,
+        "severity": alert.severity,
+        "title": alert.title,
+        "body": alert.body,
+        "supplier_id": alert.supplier_id,
+        "timestamp": as_utc(alert.created_at).isoformat(),
+        "status": alert.status,
+        "owner_email": owner_email,
+    }
+
+
+def _mitigation_payload(action: MitigationAction) -> dict:
+    return {
+        "id": action.id,
+        "title": action.title,
+        "category": action.category,
+        "description": action.description,
+        "status": action.status,
+        "requires_approval": action.requires_approval,
+        "created_at": as_utc(action.created_at).isoformat() if action.created_at else None,
+        "approved_by": action.approved_by,
+        "approved_at": as_utc(action.approved_at).isoformat() if action.approved_at else None,
+        "rejected_reason": action.rejected_reason,
+        "applied_at": as_utc(action.applied_at).isoformat() if action.applied_at else None,
+    }
+
+
+def _build_kpi_snapshot(db: Session, days: int) -> dict:
+    now = now_utc()
+    window_start = now - timedelta(days=days)
+    alerts = db.scalars(select(Alert).where(Alert.created_at >= window_start)).all()
+
+    acknowledged = [alert for alert in alerts if alert.status == "acknowledged"]
+    active = [alert for alert in alerts if alert.status == "active"]
+
+    ack_elapsed = [
+        max(int((now - (as_utc(alert.created_at) or now)).total_seconds() / 60), 0)
+        for alert in acknowledged
+    ]
+    active_elapsed = [
+        max(int((now - (as_utc(alert.created_at) or now)).total_seconds() / 60), 0)
+        for alert in active
+    ]
+
+    mtta = round(sum(ack_elapsed) / len(ack_elapsed), 2) if ack_elapsed else 0.0
+    mttr = round(sum(active_elapsed) / len(active_elapsed), 2) if active_elapsed else 0.0
+
+    breached = 0
+    for alert in active:
+        elapsed = max(int((now - (as_utc(alert.created_at) or now)).total_seconds() / 60), 0)
+        if elapsed > _severity_sla_minutes(alert.severity):
+            breached += 1
+
+    sla_compliance = 0.0 if not active else round((1 - breached / len(active)) * 100, 2)
+
+    hotspot_map: dict[str, int] = {}
+    for alert in alerts:
+        supplier = alert.supplier_id or "unknown"
+        hotspot_map[supplier] = hotspot_map.get(supplier, 0) + 1
+
+    hotspots = [
+        {"supplier_id": supplier, "count": count}
+        for supplier, count in sorted(hotspot_map.items(), key=lambda item: item[1], reverse=True)[:5]
+    ]
+
+    return {
+        "window_days": days,
+        "generated_at": now.isoformat(),
+        "kpis": {
+            "alerts_total": len(alerts),
+            "active_alerts": len(active),
+            "acknowledged_alerts": len(acknowledged),
+            "mtta_minutes": mtta,
+            "mttr_minutes": mttr,
+            "sla_compliance_percent": sla_compliance,
+            "sla_breaches": breached,
+        },
+        "recurrence_hotspots": hotspots,
+    }
+
+
+def _snapshot_to_csv(report_id: str, report_type: str, period: str, snapshot: dict) -> str:
+    kpis = snapshot.get("kpis", {})
+    rows = [
+        ["report_id", report_id],
+        ["report_type", report_type],
+        ["period", period],
+        ["generated_at", snapshot.get("generated_at", "")],
+        [],
+        ["metric", "value"],
+    ]
+
+    for key, value in kpis.items():
+        rows.append([key, value])
+
+    rows.append([])
+    rows.append(["recurrence_hotspots"])
+    rows.append(["supplier_id", "count"])
+    for hotspot in snapshot.get("recurrence_hotspots", []):
+        rows.append([hotspot.get("supplier_id", ""), hotspot.get("count", 0)])
+
+    return "\n".join(",".join(str(cell) for cell in row) for row in rows)
 
 
 def ensure_seed_data(db: Session):
@@ -465,7 +619,128 @@ def ensure_seed_data(db: Session):
     db.commit()
 
 
-app = FastAPI(title="N-SCRRA Local Backend", version="1.0.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        ensure_seed_data(db)
+    yield
+
+
+app = FastAPI(title="N-SCRRA Local Backend", version="1.0.0", lifespan=lifespan)
+active_alert_connections: dict[WebSocket, str] = {}
+notified_sla_breaches: set[str] = set()
+rate_limit_store: dict[str, list[datetime]] = {}
+manager_only_events = {
+    "sla_breach",
+    "alert_assigned",
+    "approval_submitted",
+    "approval_decided",
+    "mitigation_applied",
+}
+
+
+def _can_receive_event(role: str, event: str) -> bool:
+    if event not in manager_only_events:
+        return True
+    return role in {"manager", "admin"}
+
+
+def _enforce_rate_limit(*, key: str, max_requests: int, window_seconds: int) -> None:
+    now = now_utc()
+    window_start = now - timedelta(seconds=window_seconds)
+    hits = [hit for hit in rate_limit_store.get(key, []) if hit >= window_start]
+
+    if len(hits) >= max_requests:
+        retry_after_seconds = max(int((hits[0] + timedelta(seconds=window_seconds) - now).total_seconds()), 1)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please retry shortly.",
+            headers={"Retry-After": str(retry_after_seconds)},
+        )
+
+    hits.append(now)
+    rate_limit_store[key] = hits
+
+
+def _active_rate_limit_counts() -> list[dict]:
+    now = now_utc()
+    max_window_seconds = max(
+        REGISTER_RATE_LIMIT_WINDOW_SECONDS,
+        LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS,
+        LOGIN_EMAIL_RATE_LIMIT_WINDOW_SECONDS,
+        REPORT_GEN_USER_RATE_LIMIT_WINDOW_SECONDS,
+        REPORT_GEN_IP_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    window_start = now - timedelta(seconds=max_window_seconds)
+
+    snapshot: list[dict] = []
+    stale_keys: list[str] = []
+    for key, hits in rate_limit_store.items():
+        active_hits = [hit for hit in hits if hit >= window_start]
+        if not active_hits:
+            stale_keys.append(key)
+            continue
+
+        rate_limit_store[key] = active_hits
+        snapshot.append(
+            {
+                "key": key,
+                "active_requests": len(active_hits),
+                "oldest_request_at": as_utc(active_hits[0]).isoformat(),
+                "latest_request_at": as_utc(active_hits[-1]).isoformat(),
+            }
+        )
+
+    for key in stale_keys:
+        rate_limit_store.pop(key, None)
+
+    snapshot.sort(key=lambda item: item["active_requests"], reverse=True)
+    return snapshot
+
+
+async def _broadcast_alert_event(event: str, payload: dict) -> None:
+    if not active_alert_connections:
+        return
+
+    message = {
+        "event": event,
+        "alert": payload,
+        "emitted_at": now_utc().isoformat(),
+    }
+    stale_connections: list[WebSocket] = []
+    for websocket, role in list(active_alert_connections.items()):
+        if not _can_receive_event(role, event):
+            continue
+        try:
+            await websocket.send_json(message)
+        except Exception:
+            stale_connections.append(websocket)
+
+    for websocket in stale_connections:
+        active_alert_connections.pop(websocket, None)
+
+
+async def _broadcast_realtime_event(event: str, payload: dict) -> None:
+    if not active_alert_connections:
+        return
+
+    message = {
+        "event": event,
+        "data": payload,
+        "emitted_at": now_utc().isoformat(),
+    }
+    stale_connections: list[WebSocket] = []
+    for websocket, role in list(active_alert_connections.items()):
+        if not _can_receive_event(role, event):
+            continue
+        try:
+            await websocket.send_json(message)
+        except Exception:
+            stale_connections.append(websocket)
+
+    for websocket in stale_connections:
+        active_alert_connections.pop(websocket, None)
 
 app.add_middleware(
     CORSMiddleware,
@@ -474,14 +749,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def on_startup():
-    Base.metadata.create_all(bind=engine)
-    with SessionLocal() as db:
-        ensure_seed_data(db)
-
 
 def _error_payload(*, code: str, message: str, details: object | None = None) -> dict:
     return {
@@ -537,7 +804,14 @@ def health():
 
 
 @app.post("/api/v1/auth/register", status_code=status.HTTP_201_CREATED)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)):
+def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    _enforce_rate_limit(
+        key=f"auth:register:ip:{client_ip}",
+        max_requests=REGISTER_RATE_LIMIT_MAX,
+        window_seconds=REGISTER_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
     existing = db.scalar(select(User).where(User.email == payload.email.lower().strip()))
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already exists")
@@ -577,7 +851,20 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/v1/auth/login")
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "unknown"
+    email_key = payload.email.lower().strip()
+    _enforce_rate_limit(
+        key=f"auth:login:ip:{client_ip}",
+        max_requests=LOGIN_IP_RATE_LIMIT_MAX,
+        window_seconds=LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    _enforce_rate_limit(
+        key=f"auth:login:email:{email_key}",
+        max_requests=LOGIN_EMAIL_RATE_LIMIT_MAX,
+        window_seconds=LOGIN_EMAIL_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
     user = db.scalar(select(User).where(User.email == payload.email.lower().strip()))
     if user is None or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
@@ -705,6 +992,10 @@ def organizations(
 def get_alerts(db: Session = Depends(get_db)):
     current_time = now_utc()
     rows = db.scalars(select(Alert).order_by(Alert.created_at.desc())).all()
+    assignment_by_alert = {
+        assignment.alert_id: assignment.owner_email
+        for assignment in db.scalars(select(AlertAssignment)).all()
+    }
 
     visible = [
         row
@@ -713,44 +1004,89 @@ def get_alerts(db: Session = Depends(get_db)):
         and (as_utc(row.snoozed_until) is None or as_utc(row.snoozed_until) <= current_time)
     ]
 
-    return [
-        {
-            "id": row.id,
-            "severity": row.severity,
-            "title": row.title,
-            "body": row.body,
-            "supplier_id": row.supplier_id,
-            "timestamp": as_utc(row.created_at).isoformat(),
-            "status": row.status,
-        }
-        for row in visible
-    ]
+    return [_alert_payload(row, assignment_by_alert.get(row.id)) for row in visible]
+
+
+@app.websocket("/api/v1/ws/alerts")
+async def alerts_ws(websocket: WebSocket):
+    token = websocket.query_params.get("token")
+    if not token:
+        auth_header = websocket.headers.get("authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ", 1)[1]
+
+    if not token:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
+    try:
+        user_role = "analyst"
+        with SessionLocal() as db:
+            user = user_from_access_token(token, db)
+            user_role = user.role
+    except HTTPException:
+        await websocket.close(code=1008, reason="Unauthorized")
+        return
+
+    await websocket.accept()
+    active_alert_connections[websocket] = user_role
+    try:
+        await websocket.send_json(
+            {
+                "event": "connected",
+                "role": user_role,
+                "emitted_at": now_utc().isoformat(),
+            }
+        )
+        while True:
+            message_text = await websocket.receive_text()
+            if not message_text:
+                continue
+
+            try:
+                message = json.loads(message_text)
+            except json.JSONDecodeError:
+                continue
+
+            if isinstance(message, dict) and message.get("type") == "ping":
+                await websocket.send_json(
+                    {
+                        "event": "pong",
+                        "emitted_at": now_utc().isoformat(),
+                    }
+                )
+    except WebSocketDisconnect:
+        active_alert_connections.pop(websocket, None)
+    except Exception:
+        active_alert_connections.pop(websocket, None)
 
 
 @app.post("/api/v1/alerts/{alert_id}/acknowledge")
-def acknowledge_alert(alert_id: str, db: Session = Depends(get_db)):
+async def acknowledge_alert(alert_id: str, db: Session = Depends(get_db)):
     alert = db.get(Alert, alert_id)
     if alert is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
 
     alert.status = "acknowledged"
     db.commit()
+    await _broadcast_alert_event("alert_acknowledged", _alert_payload(alert))
     return {"id": alert.id, "status": alert.status}
 
 
 @app.post("/api/v1/alerts/{alert_id}/snooze")
-def snooze_alert(alert_id: str, payload: AlertSnoozeRequest, db: Session = Depends(get_db)):
+async def snooze_alert(alert_id: str, payload: AlertSnoozeRequest, db: Session = Depends(get_db)):
     alert = db.get(Alert, alert_id)
     if alert is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alert not found")
 
     alert.snoozed_until = now_utc() + timedelta(minutes=payload.duration_minutes)
     db.commit()
+    await _broadcast_alert_event("alert_snoozed", _alert_payload(alert))
     return {"id": alert.id, "snoozed_until": as_utc(alert.snoozed_until).isoformat()}
 
 
 @app.post("/api/v1/alerts/seed")
-def seed_alerts(payload: AlertSeedRequest, db: Session = Depends(get_db)):
+async def seed_alerts(payload: AlertSeedRequest, db: Session = Depends(get_db)):
     severities = ["critical", "high", "medium"]
     templates = {
         "critical": (
@@ -786,6 +1122,10 @@ def seed_alerts(payload: AlertSeedRequest, db: Session = Depends(get_db)):
         created_ids.append(alert.id)
 
     db.commit()
+    if created_ids:
+        latest = db.get(Alert, created_ids[0])
+        if latest is not None:
+            await _broadcast_alert_event("alert_seeded", _alert_payload(latest))
     return {
         "seeded": len(created_ids),
         "alert_ids": created_ids,
@@ -930,7 +1270,7 @@ def run_simulation(payload: SimulationRunRequest, db: Session = Depends(get_db))
 
 
 @app.get("/api/v1/recommendations/optimize")
-def get_recommendations(db: Session = Depends(get_db)):
+async def get_recommendations(db: Session = Depends(get_db)):
     rows = db.scalars(select(MitigationAction).order_by(MitigationAction.created_at.desc())).all()
 
     if not rows:
@@ -986,6 +1326,9 @@ def get_recommendations(db: Session = Depends(get_db)):
         ]
         db.add_all(seed_actions)
         db.commit()
+        for action in seed_actions:
+            if action.requires_approval:
+                await _broadcast_realtime_event("approval_submitted", _mitigation_payload(action))
         rows = seed_actions
 
     return {
@@ -1008,7 +1351,7 @@ def get_recommendations(db: Session = Depends(get_db)):
 
 
 @app.post("/api/v1/mitigations/{mitigation_id}/apply")
-def apply_mitigation(
+async def apply_mitigation(
     mitigation_id: str,
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
@@ -1035,6 +1378,7 @@ def apply_mitigation(
         details=mitigation.title,
     )
     db.commit()
+    await _broadcast_realtime_event("mitigation_applied", _mitigation_payload(mitigation))
 
     return {
         "id": mitigation.id,
@@ -1044,7 +1388,7 @@ def apply_mitigation(
 
 
 @app.get("/api/v1/manager/queue")
-def manager_queue(
+async def manager_queue(
     authorization: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
@@ -1058,6 +1402,7 @@ def manager_queue(
     now = now_utc()
     queue_items: list[dict] = []
     breached = 0
+    breach_events: list[dict] = []
     for alert in alerts:
         created = as_utc(alert.created_at) or now
         elapsed_minutes = max(int((now - created).total_seconds() / 60), 0)
@@ -1067,6 +1412,15 @@ def manager_queue(
             breached += 1
 
         owner = assignments.get(alert.id)
+        if is_breached and alert.id not in notified_sla_breaches:
+            payload = _alert_payload(alert, owner.owner_email if owner else None)
+            payload["elapsed_minutes"] = elapsed_minutes
+            payload["sla_target_minutes"] = target_minutes
+            breach_events.append(payload)
+            notified_sla_breaches.add(alert.id)
+        if not is_breached and alert.id in notified_sla_breaches:
+            notified_sla_breaches.discard(alert.id)
+
         queue_items.append(
             {
                 "id": alert.id,
@@ -1081,6 +1435,9 @@ def manager_queue(
             }
         )
 
+    for breach_payload in breach_events:
+        await _broadcast_alert_event("sla_breach", breach_payload)
+
     return {
         "summary": {
             "active": len([item for item in queue_items if item["status"] == "active"]),
@@ -1093,7 +1450,7 @@ def manager_queue(
 
 
 @app.post("/api/v1/manager/alerts/{alert_id}/assign")
-def assign_alert(
+async def assign_alert(
     alert_id: str,
     payload: AssignAlertRequest,
     authorization: Optional[str] = Header(default=None),
@@ -1128,6 +1485,7 @@ def assign_alert(
         details=f"owner={payload.owner_email}",
     )
     db.commit()
+    await _broadcast_alert_event("alert_assigned", _alert_payload(alert, assignment.owner_email))
 
     return {
         "alert_id": alert_id,
@@ -1206,7 +1564,7 @@ def manager_approvals(
 
 
 @app.post("/api/v1/manager/approvals/{mitigation_id}/decision")
-def manager_approval_decision(
+async def manager_approval_decision(
     mitigation_id: str,
     payload: MitigationDecisionRequest,
     authorization: Optional[str] = Header(default=None),
@@ -1242,6 +1600,7 @@ def manager_approval_decision(
         details=payload.reason,
     )
     db.commit()
+    await _broadcast_realtime_event("approval_decided", _mitigation_payload(row))
     return {
         "id": row.id,
         "status": row.status,
@@ -1305,10 +1664,16 @@ def admin_update_role(
 @app.get("/api/v1/admin/audit-logs")
 def admin_audit_logs(
     authorization: Optional[str] = Header(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     require_role(authorization, db, {"admin"})
-    logs = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc())).all()
+    all_logs = db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc())).all()
+    total = len(all_logs)
+    start = (page - 1) * page_size
+    end = start + page_size
+    logs = all_logs[start:end]
     return {
         "logs": [
             {
@@ -1321,7 +1686,13 @@ def admin_audit_logs(
                 "created_at": as_utc(log.created_at).isoformat(),
             }
             for log in logs
-        ]
+        ],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_next": end < total,
+        },
     }
 
 
@@ -1337,6 +1708,41 @@ def admin_integrations_health(
             {"name": "Supplier ERP", "status": "degraded", "last_sync_minutes": 21, "error_rate": 1.2},
             {"name": "Weather API", "status": "healthy", "last_sync_minutes": 2, "error_rate": 0.0},
         ],
+        "generated_at": now_utc().isoformat(),
+    }
+
+
+@app.get("/api/v1/admin/rate-limits")
+def admin_rate_limit_stats(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    require_role(authorization, db, {"admin"})
+    active_keys = _active_rate_limit_counts()
+    return {
+        "limits": {
+            "register": {
+                "max_requests": REGISTER_RATE_LIMIT_MAX,
+                "window_seconds": REGISTER_RATE_LIMIT_WINDOW_SECONDS,
+            },
+            "login_ip": {
+                "max_requests": LOGIN_IP_RATE_LIMIT_MAX,
+                "window_seconds": LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS,
+            },
+            "login_email": {
+                "max_requests": LOGIN_EMAIL_RATE_LIMIT_MAX,
+                "window_seconds": LOGIN_EMAIL_RATE_LIMIT_WINDOW_SECONDS,
+            },
+            "report_generate_user": {
+                "max_requests": REPORT_GEN_USER_RATE_LIMIT_MAX,
+                "window_seconds": REPORT_GEN_USER_RATE_LIMIT_WINDOW_SECONDS,
+            },
+            "report_generate_ip": {
+                "max_requests": REPORT_GEN_IP_RATE_LIMIT_MAX,
+                "window_seconds": REPORT_GEN_IP_RATE_LIMIT_WINDOW_SECONDS,
+            },
+        },
+        "active_keys": active_keys[:50],
         "generated_at": now_utc().isoformat(),
     }
 
@@ -1394,4 +1800,151 @@ def admin_update_compliance_policy(
         "retention_days": policy.retention_days,
         "mask_sensitive_data": policy.mask_sensitive_data,
         "updated_at": as_utc(policy.updated_at).isoformat(),
+    }
+
+
+@app.post("/api/v1/reports/generate")
+def generate_report(
+    payload: ReportGenerateRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    actor = require_user(authorization, db)
+    client_ip = request.client.host if request and request.client else "unknown"
+    _enforce_rate_limit(
+        key=f"reports:generate:user:{actor.id}",
+        max_requests=REPORT_GEN_USER_RATE_LIMIT_MAX,
+        window_seconds=REPORT_GEN_USER_RATE_LIMIT_WINDOW_SECONDS,
+    )
+    _enforce_rate_limit(
+        key=f"reports:generate:ip:{client_ip}",
+        max_requests=REPORT_GEN_IP_RATE_LIMIT_MAX,
+        window_seconds=REPORT_GEN_IP_RATE_LIMIT_WINDOW_SECONDS,
+    )
+
+    days = 7 if payload.period == "weekly" else 30
+    snapshot = _build_kpi_snapshot(db, days)
+
+    report_id = str(uuid.uuid4())
+    download_path = f"/api/v1/reports/{report_id}/download"
+    report_job = ReportJob(
+        id=report_id,
+        report_type="kpi",
+        period=payload.period,
+        output_format=payload.output_format,
+        status="ready",
+        generated_by=actor.email,
+        created_at=now_utc(),
+        completed_at=now_utc(),
+        download_path=download_path,
+        payload_json=json.dumps(snapshot),
+    )
+    db.add(report_job)
+    write_audit_log(
+        db,
+        actor_email=actor.email,
+        action="report_generated",
+        entity_type="report",
+        entity_id=report_job.id,
+        details=f"period={payload.period},format={payload.output_format}",
+    )
+    db.commit()
+
+    return {
+        "report_id": report_job.id,
+        "report_type": report_job.report_type,
+        "period": report_job.period,
+        "status": report_job.status,
+        "generated_at": as_utc(report_job.created_at).isoformat(),
+        "download_url": report_job.download_path,
+    }
+
+
+@app.get("/api/v1/reports")
+def list_reports(
+    authorization: Optional[str] = Header(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    require_user(authorization, db)
+    all_rows = db.scalars(select(ReportJob).order_by(ReportJob.created_at.desc())).all()
+    total = len(all_rows)
+    start = (page - 1) * page_size
+    end = start + page_size
+    rows = all_rows[start:end]
+    return {
+        "reports": [
+            {
+                "id": row.id,
+                "report_type": row.report_type,
+                "period": row.period,
+                "output_format": row.output_format,
+                "status": row.status,
+                "generated_by": row.generated_by,
+                "created_at": as_utc(row.created_at).isoformat(),
+                "download_url": row.download_path,
+            }
+            for row in rows
+        ],
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "has_next": end < total,
+        },
+    }
+
+
+@app.get("/api/v1/reports/{report_id}/status")
+def report_status(
+    report_id: str,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    require_user(authorization, db)
+    row = db.get(ReportJob, report_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+
+    return {
+        "report_id": row.id,
+        "status": row.status,
+        "report_type": row.report_type,
+        "period": row.period,
+        "output_format": row.output_format,
+        "generated_at": as_utc(row.created_at).isoformat(),
+        "completed_at": as_utc(row.completed_at).isoformat() if row.completed_at else None,
+        "download_url": row.download_path,
+    }
+
+
+@app.get("/api/v1/reports/{report_id}/download")
+def report_download(
+    report_id: str,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    require_user(authorization, db)
+    row = db.get(ReportJob, report_id)
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+
+    snapshot = json.loads(row.payload_json)
+    if row.output_format == "csv":
+        csv_data = _snapshot_to_csv(row.id, row.report_type, row.period, snapshot)
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "file_name": f"kpi-{row.period}-{row.id}.csv",
+                "mime_type": "text/csv",
+                "content": csv_data,
+            },
+        )
+
+    return {
+        "file_name": f"kpi-{row.period}-{row.id}.pdf",
+        "mime_type": "application/json",
+        "content": snapshot,
     }

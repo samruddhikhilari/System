@@ -95,6 +95,18 @@ class AlertRepositoryImpl implements AlertRepository {
   @override
   Stream<AlertSummary> watchLiveAlerts() {
     return webSocketService.alertsStream
+        .map((payload) {
+          final data = payload['data'];
+          if (data is Map<String, dynamic>) {
+            return data;
+          }
+          final alert = payload['alert'];
+          if (alert is Map<String, dynamic>) {
+            return alert;
+          }
+          return payload;
+        })
+        .where((json) => (json['id'] ?? '').toString().isNotEmpty)
         .map(_normalizeAlert)
         .map(AlertSummary.fromJson);
   }

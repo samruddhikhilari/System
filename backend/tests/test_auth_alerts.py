@@ -149,8 +149,44 @@ def test_simulation_recommendations_manager_admin_flow():
         assert users.status_code == 200
         assert len(users.json().get("users", [])) >= 1
 
+        limiter_stats = client.get(
+            "/api/v1/admin/rate-limits",
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        assert limiter_stats.status_code == 200
+        assert "limits" in limiter_stats.json()
+
         unauthorized = client.get(
             "/api/v1/admin/users",
             headers={"Authorization": f"Bearer {manager_token}"},
         )
         assert unauthorized.status_code == 403
+
+        report = client.post(
+            "/api/v1/reports/generate",
+            json={"period": "weekly", "output_format": "csv"},
+            headers={"Authorization": f"Bearer {manager_token}"},
+        )
+        assert report.status_code == 200
+        report_id = report.json()["report_id"]
+
+        reports = client.get(
+            "/api/v1/reports",
+            headers={"Authorization": f"Bearer {manager_token}"},
+        )
+        assert reports.status_code == 200
+        assert any(item["id"] == report_id for item in reports.json().get("reports", []))
+
+        report_status = client.get(
+            f"/api/v1/reports/{report_id}/status",
+            headers={"Authorization": f"Bearer {manager_token}"},
+        )
+        assert report_status.status_code == 200
+        assert report_status.json()["status"] == "ready"
+
+        report_download = client.get(
+            f"/api/v1/reports/{report_id}/download",
+            headers={"Authorization": f"Bearer {manager_token}"},
+        )
+        assert report_download.status_code == 200
+        assert report_download.json()["mime_type"] in {"text/csv", "application/json"}

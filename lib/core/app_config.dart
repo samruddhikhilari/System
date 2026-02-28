@@ -54,7 +54,7 @@ class AppConfig {
   /// Get current environment config
   static AppConfig get current {
     const overrideBaseUrl = String.fromEnvironment('API_BASE_URL', defaultValue: '');
-    const enableRealtime = bool.fromEnvironment('ENABLE_REALTIME', defaultValue: false);
+    const enableRealtime = bool.fromEnvironment('ENABLE_REALTIME', defaultValue: true);
     if (overrideBaseUrl.isNotEmpty) {
       return AppConfig(
         baseUrl: overrideBaseUrl,

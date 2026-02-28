@@ -75,6 +75,7 @@ dependencies:
   
   # WebSocket
   socket_io_client: ^2.0.0
+  web_socket_channel: ^2.4.5
   
   # Background Tasks
   workmanager: ^0.5.0

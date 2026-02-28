@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -19,6 +21,24 @@ class AlertCenterScreen extends ConsumerStatefulWidget {
 
 class _AlertCenterScreenState extends ConsumerState<AlertCenterScreen> {
   final Set<String> _inFlightAlertIds = <String>{};
+  StreamSubscription<AlertSummary>? _alertsSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(() async {
+      await ref.read(alertRepositoryProvider).initializeRealtime();
+      _alertsSubscription = ref.read(alertRepositoryProvider).watchLiveAlerts().listen((_) {
+        ref.invalidate(alertsProvider);
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _alertsSubscription?.cancel();
+    super.dispose();
+  }
 
   Future<void> _handleAcknowledge(AlertSummary alert) async {
     if (_inFlightAlertIds.contains(alert.id)) return;
@@ -70,7 +90,7 @@ class _AlertCenterScreenState extends ConsumerState<AlertCenterScreen> {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final alertsState = ref.watch(alertsProvider);
 
     return Scaffold(

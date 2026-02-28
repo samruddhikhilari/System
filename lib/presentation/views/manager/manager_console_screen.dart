@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/api_endpoints.dart';
+import '../../../data/repositories/alert_repository.dart';
 import '../../../data/sources/remote/dio_provider.dart';
+import '../../../services/websocket_service.dart';
 
 class ManagerConsoleScreen extends ConsumerStatefulWidget {
   const ManagerConsoleScreen({super.key});
@@ -16,15 +20,30 @@ class _ManagerConsoleScreenState extends ConsumerState<ManagerConsoleScreen> {
   Map<String, dynamic> _queue = <String, dynamic>{};
   Map<String, dynamic> _sla = <String, dynamic>{};
   List<Map<String, dynamic>> _pendingApprovals = <Map<String, dynamic>>[];
+  StreamSubscription<Map<String, dynamic>>? _eventsSubscription;
+  bool _liveRefreshInProgress = false;
 
   @override
   void initState() {
     super.initState();
-    Future.microtask(_loadAll);
+    Future.microtask(() async {
+      await _loadAll();
+      await ref.read(alertRepositoryProvider).initializeRealtime();
+      _eventsSubscription =
+          ref.read(webSocketServiceProvider).alertsStream.listen(_handleLiveEvent);
+    });
   }
 
-  Future<void> _loadAll() async {
-    setState(() => _loading = true);
+  @override
+  void dispose() {
+    _eventsSubscription?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadAll({bool showLoader = true}) async {
+    if (showLoader) {
+      setState(() => _loading = true);
+    }
     try {
       final dio = ref.read(dioProvider);
       final results = await Future.wait([
@@ -45,7 +64,62 @@ class _ManagerConsoleScreenState extends ConsumerState<ManagerConsoleScreen> {
         SnackBar(content: Text('Failed to load manager console: $error')),
       );
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted && showLoader) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  void _handleLiveEvent(Map<String, dynamic> event) {
+    final eventName = (event['event'] ?? '').toString();
+    if (eventName != 'sla_breach' &&
+        eventName != 'alert_assigned' &&
+        eventName != 'approval_submitted' &&
+        eventName != 'approval_decided' &&
+        eventName != 'mitigation_applied') {
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    final payload = event['data'] is Map<String, dynamic>
+        ? event['data'] as Map<String, dynamic>
+        : (event['alert'] is Map<String, dynamic>
+              ? event['alert'] as Map<String, dynamic>
+              : <String, dynamic>{});
+
+    if (eventName == 'sla_breach') {
+      final title = (payload['title'] ?? 'Alert').toString();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('SLA breach detected: $title')));
+    } else if (eventName == 'approval_submitted') {
+      final title = (payload['title'] ?? 'Mitigation').toString();
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('New approval request: $title')));
+    } else if (eventName == 'approval_decided') {
+      final status = (payload['status'] ?? '').toString();
+      final title = (payload['title'] ?? 'Mitigation').toString();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Approval updated: $title ($status)')),
+      );
+    }
+
+    unawaited(_refreshFromLive());
+  }
+
+  Future<void> _refreshFromLive() async {
+    if (!mounted || _liveRefreshInProgress) {
+      return;
+    }
+    _liveRefreshInProgress = true;
+    try {
+      await _loadAll(showLoader: false);
+    } finally {
+      _liveRefreshInProgress = false;
     }
   }
 

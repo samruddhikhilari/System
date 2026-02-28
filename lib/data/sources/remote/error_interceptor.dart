@@ -25,6 +25,12 @@ class ErrorInterceptor extends QueuedInterceptor {
                 ? 'Unauthorized. Please login again.'
                 : 'Access denied.',
           );
+        } else if (statusCode == 429) {
+          appException = ServerException(
+            message:
+                err.response?.data['message'] ?? 'Too many requests. Please retry in a moment.',
+            statusCode: statusCode,
+          );
         } else if (statusCode == 404) {
           appException = ValidationException(message: 'Resource not found.');
         } else if (statusCode >= 500) {

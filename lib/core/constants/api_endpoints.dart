@@ -75,6 +75,7 @@ class ApiEndpoints {
     static String adminUpdateUserRole(String id) => '/admin/users/$id/role';
     static const String adminAuditLogs = '/admin/audit-logs';
     static const String adminIntegrationsHealth = '/admin/integrations/health';
+    static const String adminRateLimits = '/admin/rate-limits';
     static const String adminCompliancePolicy = '/admin/policies/compliance';
 
   // Routes

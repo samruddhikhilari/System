@@ -57,3 +57,35 @@ Stop-Process -Id <PID> -Force
   - `111` (Demo Organization)
   - `222` (Supply Ops Group)
 - For registration form, use Organization ID `111`.
+
+## Environment Variables
+
+Use `backend/.env.example` as reference. This backend reads environment variables from the shell/process.
+
+PowerShell example:
+
+```powershell
+$env:DATABASE_URL = "sqlite:///./app.db"
+$env:JWT_SECRET = "replace-with-strong-secret"
+
+$env:REGISTER_RATE_LIMIT_MAX = "10"
+$env:REGISTER_RATE_LIMIT_WINDOW_SECONDS = "60"
+
+$env:LOGIN_IP_RATE_LIMIT_MAX = "25"
+$env:LOGIN_IP_RATE_LIMIT_WINDOW_SECONDS = "60"
+
+$env:LOGIN_EMAIL_RATE_LIMIT_MAX = "10"
+$env:LOGIN_EMAIL_RATE_LIMIT_WINDOW_SECONDS = "60"
+
+$env:REPORT_GEN_USER_RATE_LIMIT_MAX = "10"
+$env:REPORT_GEN_USER_RATE_LIMIT_WINDOW_SECONDS = "60"
+
+$env:REPORT_GEN_IP_RATE_LIMIT_MAX = "20"
+$env:REPORT_GEN_IP_RATE_LIMIT_WINDOW_SECONDS = "60"
+```
+
+Then start server in the same terminal:
+
+```powershell
+.\.venv\Scripts\python -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
