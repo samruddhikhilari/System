@@ -43,6 +43,14 @@ Open another terminal in project root:
 flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000/api/v1
 ```
 
+### if already any process exists with that port then (stop that)
+Use these in PowerShell (Windows):
+
+Find the PID using port 8000:
+Get-NetTCPConnection -LocalPort 8000 -State Listen | Select-Object LocalAddress,LocalPort,OwningProcess
+Stop that PID (replace <PID>):
+Stop-Process -Id <PID> -Force
+
 ## Notes
 
 - Default seeded organizations:
